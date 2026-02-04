@@ -187,6 +187,14 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
   const dmScope = input.cfg.session?.dmScope ?? "main";
   const identityLinks = input.cfg.session?.identityLinks;
   const channelAliases = input.cfg.session?.channelAliases;
+  const mergeGuilds = input.cfg.session?.mergeGuilds;
+
+  // If this guild is in mergeGuilds, override the peer to use the guild ID
+  // so all channels in the guild share one session.
+  const mergedPeer: RoutePeer | null =
+    mergeGuilds && guildId && mergeGuilds.includes(guildId) && peer?.kind === "channel"
+      ? { kind: "channel", id: `guild:${guildId}` }
+      : peer;
 
   const choose = (agentId: string, matchedBy: ResolvedAgentRoute["matchedBy"]) => {
     const resolvedAgentId = pickFirstExistingAgentId(input.cfg, agentId);
@@ -194,7 +202,7 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
       agentId: resolvedAgentId,
       channel,
       accountId,
-      peer,
+      peer: mergedPeer,
       dmScope,
       identityLinks,
       channelAliases,

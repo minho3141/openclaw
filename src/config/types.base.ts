@@ -84,6 +84,8 @@ export type SessionConfig = {
   identityLinks?: Record<string, string[]>;
   /** Map channel/peer IDs to a canonical ID so multiple channels share one session. */
   channelAliases?: Record<string, string>;
+  /** List of guild/team IDs where all channels share a single session. */
+  mergeGuilds?: string[];
   resetTriggers?: string[];
   idleMinutes?: number;
   reset?: SessionResetConfig;
