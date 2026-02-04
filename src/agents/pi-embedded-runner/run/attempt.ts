@@ -44,6 +44,7 @@ import {
 } from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../../pi-tools.js";
+import { readPrefillContent } from "../../prefill.js";
 import { resolveSandboxContext } from "../../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
@@ -561,6 +562,25 @@ export async function runEmbeddedAttempt(
         if (limited.length > 0) {
           activeSession.agent.replaceMessages(limited);
         }
+
+        // Prefill injection: read PREFILL.md and inject as assistant message
+        const prefillContent = await readPrefillContent(effectiveWorkspace);
+        if (prefillContent) {
+          // Store prefill for later stripping
+          (activeSession as { _prefillContent?: string })._prefillContent = prefillContent;
+
+          // Inject as assistant message at the end
+          const currentMessages = activeSession.messages;
+          const prefillMessage: AgentMessage = {
+            role: "assistant",
+            content: prefillContent,
+          };
+          activeSession.agent.replaceMessages([...currentMessages, prefillMessage]);
+          cacheTrace?.recordStage("session:prefill-injected", {
+            prefill: prefillContent,
+            messages: activeSession.messages,
+          });
+        }
       } catch (err) {
         sessionManager.flushPendingToolResults?.();
         activeSession.dispose();
@@ -864,6 +884,32 @@ export async function runEmbeddedAttempt(
         if (abortWarnTimer) {
           clearTimeout(abortWarnTimer);
         }
+
+        // Strip prefill from last assistant message before persisting to session
+        const prefillContent = (activeSession as { _prefillContent?: string })._prefillContent;
+        if (prefillContent) {
+          const currentMessages = activeSession.messages;
+          if (currentMessages.length > 0) {
+            const lastMsg = currentMessages[currentMessages.length - 1];
+            if (lastMsg.role === "assistant" && typeof lastMsg.content === "string") {
+              // Strip prefill from the start of assistant response
+              if (lastMsg.content.startsWith(prefillContent)) {
+                const stripped = lastMsg.content.slice(prefillContent.length).trimStart();
+                const updatedMessages = [...currentMessages];
+                updatedMessages[updatedMessages.length - 1] = {
+                  ...lastMsg,
+                  content: stripped,
+                };
+                activeSession.agent.replaceMessages(updatedMessages);
+                cacheTrace?.recordStage("session:prefill-stripped", {
+                  original: lastMsg.content,
+                  stripped,
+                });
+              }
+            }
+          }
+        }
+
         unsubscribe();
         clearActiveEmbeddedRun(params.sessionId, queueHandle);
         params.abortSignal?.removeEventListener?.("abort", onAbort);
