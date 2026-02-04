@@ -133,11 +133,19 @@ export function buildAgentPeerSessionKey(params: {
   identityLinks?: Record<string, string[]>;
   /** DM session scope. */
   dmScope?: "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer";
+  /** Channel aliases: maps channel/peer IDs to a canonical ID for session merging. */
+  channelAliases?: Record<string, string>;
 }): string {
+  // Resolve channel alias: map peerId to canonical ID for session merging
+  const resolvedPeerId =
+    params.channelAliases && params.peerId
+      ? (params.channelAliases[params.peerId.trim()] ?? params.peerId)
+      : params.peerId;
+
   const peerKind = params.peerKind ?? "dm";
   if (peerKind === "dm") {
     const dmScope = params.dmScope ?? "main";
-    let peerId = (params.peerId ?? "").trim();
+    let peerId = (resolvedPeerId ?? "").trim();
     const linkedPeerId =
       dmScope === "main"
         ? null
@@ -168,7 +176,7 @@ export function buildAgentPeerSessionKey(params: {
     });
   }
   const channel = (params.channel ?? "").trim().toLowerCase() || "unknown";
-  const peerId = ((params.peerId ?? "").trim() || "unknown").toLowerCase();
+  const peerId = ((resolvedPeerId ?? "").trim() || "unknown").toLowerCase();
   return `agent:${normalizeAgentId(params.agentId)}:${channel}:${peerKind}:${peerId}`;
 }
 
