@@ -562,13 +562,6 @@ export async function runEmbeddedAttempt(
         if (limited.length > 0) {
           activeSession.agent.replaceMessages(limited);
         }
-
-        // Prefill content is read here but injected later, right before prompt(),
-        // to avoid being overwritten by orphan repair or image injection.
-        const prefillContent = await readPrefillContent(effectiveWorkspace);
-        if (prefillContent) {
-          (activeSession as { _prefillContent?: string })._prefillContent = prefillContent;
-        }
       } catch (err) {
         sessionManager.flushPendingToolResults?.();
         activeSession.dispose();
@@ -813,7 +806,9 @@ export async function runEmbeddedAttempt(
           // Prefill injection via environment variable.
           // The SDK's anthropic.js reads OPENCLAW_PREFILL (base64) and appends
           // an assistant message to the API request — true Anthropic prefill.
+          const prefillContent = await readPrefillContent(effectiveWorkspace);
           if (prefillContent) {
+            (activeSession as { _prefillContent?: string })._prefillContent = prefillContent;
             process.env.OPENCLAW_PREFILL = Buffer.from(prefillContent).toString("base64");
             log.debug(`prefill set: ${prefillContent.length} chars via env`);
             cacheTrace?.recordStage("session:prefill-set", {
