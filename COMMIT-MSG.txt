@@ -1,0 +1,33 @@
+feat: Add assistant prefill injection with ephemeral behavior
+
+Implement automatic prefill injection from PREFILL.md with ephemeral
+stripping after each API response. This allows agents to have consistent
+response patterns without polluting conversation history.
+
+Key changes:
+- New module: src/agents/prefill.ts (read/strip logic)
+- Modified: src/agents/pi-embedded-runner/run/attempt.ts
+  - Inject prefill as assistant message before API call
+  - Strip prefill from response before persisting to session
+- Tests: src/agents/prefill.test.ts (9 tests, all passing)
+
+Feature details:
+- Reads PREFILL.md from agent workspace root
+- Injects as assistant message on every API call
+- Strips prefill portion from response after completion
+- No accumulation in conversation history (ephemeral)
+- Opt-in via file existence (backward compatible)
+
+Usage:
+  echo "I'll analyze this step by step." > ~/agent-workspace/PREFILL.md
+
+Token impact:
+- Input tokens increase by prefill length per turn (~400 tokens)
+- No context window accumulation (stripped after each turn)
+
+Documentation:
+- PREFILL-IMPLEMENTATION.md (full implementation details)
+- PREFILL-SPEC.md (original spec)
+
+Build: ✅ pnpm build (success)
+Tests: ✅ pnpm vitest prefill (9/9 passed)

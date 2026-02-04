@@ -564,16 +564,31 @@ export async function runEmbeddedAttempt(
         }
 
         // Prefill injection: read PREFILL.md and inject as assistant message
+        // Anthropic API treats a trailing assistant message as a "prefill" —
+        // the model continues from that text instead of starting fresh.
         const prefillContent = await readPrefillContent(effectiveWorkspace);
         if (prefillContent) {
           // Store prefill for later stripping
           (activeSession as { _prefillContent?: string })._prefillContent = prefillContent;
 
-          // Inject as assistant message at the end
+          // Inject as a proper AssistantMessage with content block array
           const currentMessages = activeSession.messages;
           const prefillMessage: AgentMessage = {
             role: "assistant",
-            content: prefillContent,
+            content: [{ type: "text" as const, text: prefillContent }],
+            api: params.model.api,
+            provider: params.provider as any,
+            model: params.modelId,
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: Date.now(),
           };
           activeSession.agent.replaceMessages([...currentMessages, prefillMessage]);
           cacheTrace?.recordStage("session:prefill-injected", {
@@ -885,26 +900,81 @@ export async function runEmbeddedAttempt(
           clearTimeout(abortWarnTimer);
         }
 
-        // Strip prefill from last assistant message before persisting to session
+        // Strip prefill from last assistant message before persisting to session.
+        // The prefill was injected as a separate assistant message before prompt();
+        // the API merges it into the response. We need to remove the prefill text
+        // from the beginning of the first text block in the assistant's response.
         const prefillContent = (activeSession as { _prefillContent?: string })._prefillContent;
         if (prefillContent) {
           const currentMessages = activeSession.messages;
           if (currentMessages.length > 0) {
             const lastMsg = currentMessages[currentMessages.length - 1];
-            if (lastMsg.role === "assistant" && typeof lastMsg.content === "string") {
-              // Strip prefill from the start of assistant response
-              if (lastMsg.content.startsWith(prefillContent)) {
-                const stripped = lastMsg.content.slice(prefillContent.length).trimStart();
-                const updatedMessages = [...currentMessages];
-                updatedMessages[updatedMessages.length - 1] = {
-                  ...lastMsg,
-                  content: stripped,
-                };
-                activeSession.agent.replaceMessages(updatedMessages);
-                cacheTrace?.recordStage("session:prefill-stripped", {
-                  original: lastMsg.content,
-                  stripped,
+            if (lastMsg.role === "assistant") {
+              let stripped = false;
+              if (typeof lastMsg.content === "string") {
+                // String content (unlikely for Anthropic but handle gracefully)
+                if (lastMsg.content.startsWith(prefillContent)) {
+                  const strippedText = lastMsg.content.slice(prefillContent.length).trimStart();
+                  const updatedMessages = [...currentMessages];
+                  updatedMessages[updatedMessages.length - 1] = {
+                    ...lastMsg,
+                    content: strippedText,
+                  };
+                  activeSession.agent.replaceMessages(updatedMessages);
+                  stripped = true;
+                  cacheTrace?.recordStage("session:prefill-stripped", {
+                    original: lastMsg.content,
+                    stripped: strippedText,
+                  });
+                }
+              } else if (Array.isArray(lastMsg.content)) {
+                // Content block array (normal Anthropic format)
+                const firstTextIdx = lastMsg.content.findIndex((b: any) => b.type === "text");
+                if (firstTextIdx >= 0) {
+                  const firstText = (lastMsg.content[firstTextIdx] as any).text;
+                  if (typeof firstText === "string" && firstText.startsWith(prefillContent)) {
+                    const strippedText = firstText.slice(prefillContent.length).trimStart();
+                    const updatedContent = [...lastMsg.content];
+                    updatedContent[firstTextIdx] = {
+                      ...(updatedContent[firstTextIdx] as any),
+                      text: strippedText,
+                    };
+                    const updatedMessages = [...currentMessages];
+                    updatedMessages[updatedMessages.length - 1] = {
+                      ...lastMsg,
+                      content: updatedContent,
+                    };
+                    activeSession.agent.replaceMessages(updatedMessages);
+                    stripped = true;
+                    cacheTrace?.recordStage("session:prefill-stripped", {
+                      original: firstText,
+                      stripped: strippedText,
+                    });
+                  }
+                }
+              }
+              if (!stripped) {
+                // Prefill wasn't found in the response — may have been ignored by model.
+                // Remove the injected prefill assistant message if it's still separate.
+                // The prefill message was added before prompt(), so if prompt() added
+                // a new assistant message, we might have two assistant messages in a row.
+                // Clean up by removing any assistant message that matches the prefill exactly.
+                const updatedMessages = currentMessages.filter((m) => {
+                  if (m.role !== "assistant") return true;
+                  if (Array.isArray(m.content) && m.content.length === 1) {
+                    const block = m.content[0] as any;
+                    if (block.type === "text" && block.text === prefillContent) {
+                      return false; // Remove the injected prefill message
+                    }
+                  }
+                  return true;
                 });
+                if (updatedMessages.length !== currentMessages.length) {
+                  activeSession.agent.replaceMessages(updatedMessages);
+                  cacheTrace?.recordStage("session:prefill-removed", {
+                    prefill: prefillContent,
+                  });
+                }
               }
             }
           }
