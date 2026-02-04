@@ -563,38 +563,11 @@ export async function runEmbeddedAttempt(
           activeSession.agent.replaceMessages(limited);
         }
 
-        // Prefill injection: read PREFILL.md and inject as assistant message
-        // Anthropic API treats a trailing assistant message as a "prefill" —
-        // the model continues from that text instead of starting fresh.
+        // Prefill content is read here but injected later, right before prompt(),
+        // to avoid being overwritten by orphan repair or image injection.
         const prefillContent = await readPrefillContent(effectiveWorkspace);
         if (prefillContent) {
-          // Store prefill for later stripping
           (activeSession as { _prefillContent?: string })._prefillContent = prefillContent;
-
-          // Inject as a proper AssistantMessage with content block array
-          const currentMessages = activeSession.messages;
-          const prefillMessage: AgentMessage = {
-            role: "assistant",
-            content: [{ type: "text" as const, text: prefillContent }],
-            api: params.model.api,
-            provider: params.provider as any,
-            model: params.modelId,
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 0,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-            },
-            stopReason: "stop",
-            timestamp: Date.now(),
-          };
-          activeSession.agent.replaceMessages([...currentMessages, prefillMessage]);
-          cacheTrace?.recordStage("session:prefill-injected", {
-            prefill: prefillContent,
-            messages: activeSession.messages,
-          });
         }
       } catch (err) {
         sessionManager.flushPendingToolResults?.();
@@ -835,6 +808,19 @@ export async function runEmbeddedAttempt(
               provider: params.provider,
               modelId: params.modelId,
             });
+          }
+
+          // Prefill injection via environment variable.
+          // The SDK's anthropic.js reads OPENCLAW_PREFILL (base64) and appends
+          // an assistant message to the API request — true Anthropic prefill.
+          if (prefillContent) {
+            process.env.OPENCLAW_PREFILL = Buffer.from(prefillContent).toString("base64");
+            log.debug(`prefill set: ${prefillContent.length} chars via env`);
+            cacheTrace?.recordStage("session:prefill-set", {
+              prefill: prefillContent,
+            });
+          } else {
+            delete process.env.OPENCLAW_PREFILL;
           }
 
           // Only pass images option if there are actually images to pass
